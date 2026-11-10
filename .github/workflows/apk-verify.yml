@@ -1,0 +1,93 @@
+name: APK verify
+
+# Temporary verification workflow: builds a debug APK of the current tree so the
+# MCP changes are proven to compile and link for Android. Lives only on a
+# throwaway ci/* branch and is not part of any pull request.
+on:
+  push:
+    branches:
+      - 'ci/apk-check-*'
+  workflow_dispatch:
+
+concurrency:
+  group: apk-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: 21
+          overwrite-settings: true
+
+      - name: Read Flutter version
+        id: fv
+        working-directory: .
+        run: echo "version=$(jq -r '.flutter' .fvmrc)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.fv.outputs.version }}
+          channel: stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable Corepack
+        working-directory: .
+        run: corepack enable
+
+      - name: Set up Rust
+        working-directory: .
+        run: rustup show active-toolchain
+
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+
+      - name: Set up NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug --flavor production --target-platform android-arm64
+
+      - name: Report APK
+        run: |
+          apk=build/app/outputs/flutter-apk/app-production-debug.apk
+          ls -l "$apk"
+          sha256sum "$apk"
+          echo "### APK $(stat -c %s "$apk") bytes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          sha256sum "$apk" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-debug-apk
+          path: mobile/build/app/outputs/flutter-apk/app-production-debug.apk
+          if-no-files-found: warn
